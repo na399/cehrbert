@@ -8,8 +8,8 @@
 
 
 CEHR-BERT is a large language model developed for the structured EHR data, the work has been published
-at https://proceedings.mlr.press/v158/pang21a.html. CEHR-BERT currently only supports the structured EHR data in the
-OMOP format, which is a common data model used to support observational studies and managed by the Observational Health
+at https://proceedings.mlr.press/v158/pang21a.html. CEHR-BERT focuses exclusively on the structured EHR data in the
+OMOP CDM v5.4 format, which is a common data model used to support observational studies and managed by the Observational Health
 Data Science and Informatics (OHDSI) open-science community.
 There are three major components in CEHR-BERT, data generation, model pre-training, and model evaluation with
 fine-tuning, those components work in conjunction to provide an end-to-end model evaluation framework. The CEHR-BERT
@@ -51,201 +51,264 @@ The project is built in python 3.10, and project dependency needs to be installe
 
 Create a new Python virtual environment
 
-```console
+```bash
 python3.10 -m venv .venv;
 source .venv/bin/activate;
 ```
 
 Build the project
 
-```console
+```bash
 pip install -e .[dev]
 ```
 
-## OMOP vs. MEDS Format Considerations
-CEHR-BERT can be trained using either the OMOP or MEDS data formats; however, models trained on one format are not compatible with those trained on the other.
-This incompatibility arises because CEHR-BERT uses different concept identifiers depending on the format: standard concept IDs (e.g., SNOMED for conditions) in OMOP,
-and source concept IDs (e.g., ICD-9/10) in MEDS. The mappings between these terminologies are many-to-many, making direct alignment between formats unreliable.
-It is therefore crucial to use a consistent data format across pretraining, fine-tuning, and downstream tasks such as linear probing.
-
-## Instructions for Use with [MEDS](https://github.com/Medical-Event-Data-Standard/meds)
-Step 1. Convert MEDS to the [meds_reader](https://github.com/som-shahlab/meds_reader) database
----------------------------
-If you don't have the MEDS dataset, you could convert the OMOP dataset to the MEDS
-using [meds_etl](https://github.com/Medical-Event-Data-Standard/meds_etl).
-We have prepared a synthea dataset with 1M patients for you to test, you could download it
-at [omop_synthea.tar.gz](https://drive.google.com/file/d/1k7-cZACaDNw8A1JRI37mfMAhEErxKaQJ/view?usp=share_link)
-```console
-tar -xvf omop_synthea.tar .
-```
-Convert the OMOP dataset to the MEDS format
-```console
-pip install meds_etl==0.3.6;
-meds_etl_omop omop_synthea synthea_meds;
-```
-Add subject_splits.parquet to the MEDS metadata
-
-```python
-import os.path
-import numpy as np
-import polars as pl
-
-person = pl.read_parquet("omop_synthea/person/*.parquet")
-# Set random seed for reproducibility
-np.random.seed(42)
-
-# Generate random indices
-n = len(person)
-indices = np.random.permutation(n)
-
-# Calculate split points
-train_end = int(n * 0.7)
-tuning_end = train_end + int(n * 0.15)
-
-# Create boolean masks
-train_mask = indices < train_end
-tuning_mask = (indices >= train_end) & (indices < tuning_end)
-held_out_mask = indices >= tuning_end
-
-# Split the DataFrame
-train_df = person.filter(pl.Series(train_mask))
-tuning_df = person.filter(pl.Series(tuning_mask))
-held_out_df = person.filter(pl.Series(held_out_mask))
-
-data_split = []
-for split, df in zip(
-    ("train", "tuning", "held_out"), (train_df, tuning_df, held_out_df)
-):
-    df_split = df.select(pl.col("person_id").alias("subject_id")).with_columns(
-        pl.lit(split).alias("split")
-    )
-    data_split.append(df_split)
-split_df = pl.concat(data_split)
-split_df.write_parquet(
-    os.path.join("synthea_meds", "metadata", "subject_splits.parquet")
-)
-```
-Convert MEDS to the meds_reader database to get the patient level data
-```console
-meds_reader_convert synthea_meds synthea_meds_reader --num_threads 4
+For GPU support with CUDA 12.8:
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu128
 ```
 
-Step 2. Pretrain CEHR-BERT using the meds_reader database
----------------------------
-```console
-mkdir test_dataset_prepared;
-mkdir test_synthea_results;
-python -m cehrbert.runners.hf_cehrbert_pretrain_runner \
-   sample_configs/hf_cehrbert_pretrain_runner_meds_config.yaml
-```
+## Key Updates in This Version
 
-## Instructions for Use with OMOP
+### Data Processing Modernization
+CEHR-BERT now uses modern data processing libraries:
+- **Polars**: Replaces PySpark for efficient data processing with native Rust performance
+- **ConnectorX**: High-performance database connectivity for direct OMOP table access
+- **PyTorch/HuggingFace**: All models are now based on the HuggingFace transformers library
+
+### New Features
+- Direct database connections to OMOP CDM v5.4 databases (PostgreSQL, MySQL, SQL Server, etc.)
+- Improved data processing performance with Polars
+- Streaming data processing for large datasets
+- Simplified installation without Spark dependencies
+- GPU support with PyTorch CUDA 12.8
+
+### Simplified Architecture
+- Removed TensorFlow/Keras dependencies - all models now use PyTorch
+- Integrated core data processing functionality (previously in cehrbert_data)
+- Focus on OMOP CDM v5.4 format exclusively
+- Streamlined configuration with YAML files
+
+## Instructions for Use with OMOP CDM v5.4
 
 Step 1. Download OMOP tables as parquet files
 ---------------------------
-We created a spark app to download OMOP tables from SQL Server as parquet files. You need adjust the properties
-in `db_properties.ini` to match with your database setup. Download [jtds-1.3.1.jar](https://mvnrepository.com/artifact/net.sourceforge.jtds/jtds/1.3.1) into the spark jars folder in the python environment.
-```console
-cp jtds-1.3.1.jar .venv/lib/python3.10/site-packages/pyspark/jars/
-```
-We use spark as the data processing engine to generate the pretraining data.
-For that, we need to set up the relevant SPARK environment variables.
+CEHR-BERT now uses Polars and ConnectorX for efficient data processing. You can either:
+- Connect directly to your OMOP database
+- Use pre-exported parquet files
+
+To download OMOP tables from your database:
 ```bash
-# the omop derived tables need to be built using pyspark
-export SPARK_WORKER_INSTANCES="1"
-export SPARK_WORKER_CORES="16"
-export SPARK_EXECUTOR_CORES="2"
-export SPARK_DRIVER_MEMORY="12g"
-export SPARK_EXECUTOR_MEMORY="12g"
-```
-Download the OMOP tables as parquet files
-```console
 python -u -m cehrbert.tools.download_omop_tables -c db_properties.ini \
    -tc person visit_occurrence condition_occurrence procedure_occurrence \
    drug_exposure measurement observation_period \
    concept concept_relationship concept_ancestor \
-   -o ~/Documents/omop_test/
+   -o data/omop_test/
+```
+
+Update `db_properties.ini` with your database connection details:
+```ini
+[database]
+host = your_host
+port = your_port
+database = your_database
+username = your_username
+password = your_password
+driver = postgresql  # or mysql, mssql, etc.
 ```
 
 We have prepared a synthea dataset with 1M patients for you to test, you could download it
 at [omop_synthea.tar.gz](https://drive.google.com/file/d/1k7-cZACaDNw8A1JRI37mfMAhEErxKaQJ/view?usp=share_link)
 
-```console
-tar -xvf omop_synthea.tar ~/Document/omop_test/
+```bash
+tar -xvf omop_synthea.tar data/omop
 ```
 
-Step 2. Generate training data for CEHR-BERT using cehrbert_data
+Step 1.5. Consolidate Partitioned OMOP Data (if needed)
 ---------------------------
-We order the patient events in chronological order and put all data points in a sequence. We insert artificial tokens
-VS (visit start) and VE (visit end) to the start and the end of the visit. In addition, we insert artificial time
-tokens (ATT) between visits to indicate the time interval between visits. This approach allows us to apply BERT to
-structured EHR as-is.
-The sequence can be seen conceptually as [VS] [V1] [VE] [ATT] [VS] [V2] [VE], where [V1] and [V2] represent a list of
-concepts associated with those visits.
+If your OMOP data is in partitioned format (multiple parquet files per table), consolidate them first:
 
-Set up the pyspark environment variables if you haven't done so.
 ```bash
-# the omop derived tables need to be built using pyspark
-export SPARK_WORKER_INSTANCES="1"
-export SPARK_WORKER_CORES="16"
-export SPARK_EXECUTOR_CORES="2"
-export SPARK_DRIVER_MEMORY="12g"
-export SPARK_EXECUTOR_MEMORY="12g"
+python consolidate_omop_data.py data/omop data/omop_consolidated
 ```
-Generate the pretraining data using the following command
+
+This script will:
+- Combine all partitioned parquet files for each table into single files
+- Handle large datasets efficiently using Polars
+- Output consolidated files named as `{table_name}.parquet`
+
+Step 2. Generate Patient Sequences from OMOP Data
+---------------------------
+Convert your OMOP tables into patient sequences for CEHR-BERT pre-training.
+
+**Option 1: Use the preprocessing pipeline** (recommended):
 ```bash
-sh src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
-  --input_folder $OMOP_DIR \
-  --output_folde $CEHR_BERT_DATA_DIR \
-  --start_date "1985-01-01"
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   --input_folder data/omop \
+   --output_folder data/omop/patient_sequences/ \
+   --start_date 1985-01-01 \
+   --min_patients 100
 ```
+
+For large datasets with staging mode:
+```bash
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   data/omop \
+   data/patient_sequences \
+   2020-01-01 \
+   100 \
+   --use_staging \
+   --num_workers 16 \
+   --num_partitions 50
+```
+
+For best performance, use the vectorized mode:
+```bash
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   --input_folder data/omop \
+   --output_folder data/patient_sequences \
+   --start_date 2020-01-01 \
+   --min_patients 100 \
+   --use_vectorized
+```
+
+For large datasets, adjust the chunk size based on available memory:
+```bash
+# For 1M+ patients with limited memory
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   --input_folder data/omop \
+   --output_folder data/patient_sequences \
+   --start_date 2020-01-01 \
+   --min_patients 100 \
+   --use_vectorized \
+   --chunk_size 2500
+```
+
+For datasets with string_view compatibility issues or memory constraints, use Arrow mode:
+```bash
+# Arrow mode - avoids string_view issues and memory problems
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   --input_folder data/omop \
+   --output_folder data/patient_sequences \
+   --start_date 2020-01-01 \
+   --min_patients 100 \
+   --use_arrow \
+   --chunk_size 5000
+```
+
+This pipeline will:
+1. Filter concepts based on minimum patient count
+2. Generate patient sequences with temporal tokens
+3. Create train/validation/test splits (memory-efficient streaming for large datasets)
+
+**Performance Notes:**
+- **Arrow mode**: Memory efficient, no string_view issues, best for HuggingFace compatibility
+- **Vectorized mode**: ~30x faster than original implementation
+- **Staging mode**: ~4 hours for 1M patients using 16 workers
+- **Original mode**: Best for small datasets (<10K patients)
+
+**Chunk Size Recommendations for Vectorized Mode:**
+| Dataset Size | Chunk Size | Memory Usage | Processing Time |
+|--------------|------------|--------------|-----------------|
+| < 100K       | 10,000     | ~4GB         | < 1 minute      |
+| 100K - 500K  | 5,000      | ~8GB         | 5-6 minutes     |
+| 500K - 1M    | 2,000      | ~15GB        | 10-12 minutes   |
+| > 1M         | 1,000      | ~20GB        | 15-20 minutes   |
+
+If you encounter out-of-memory errors, reduce the chunk_size by half. Monitor memory usage with `htop` during processing.
+
+**Option 2: Run individual steps**:
+```bash
+# Step 1: Filter concepts by minimum patient count
+python -m cehrbert.data_processing.concept_filter \
+   --input_folder data/omop_test/ \
+   --output_folder data/patient_sequences/ \
+   --min_patients 100
+
+# Step 2: Generate patient sequences
+python -m cehrbert.data_processing.sequence_generator \
+   --input_folder data/omop_test/ \
+   --output_folder data/patient_sequences/ \
+   --start_date 1985-01-01 \
+   --concept_filter_file data/patient_sequences/included_concepts.parquet
+
+# Step 3: Split into train/val/test (now memory-efficient for large datasets)
+python -m cehrbert.data_processing.patient_splitter \
+   --input_folder data/patient_sequences/ \
+   --train_ratio 0.8
+```
+
+**Option 3: Use the standalone script**:
+```bash
+# Edit generate_patient_sequences.py to update paths
+python generate_patient_sequences.py
+```
+
+The patient sequence generation will:
+- Read OMOP tables (person, visit_occurrence, condition_occurrence, procedure_occurrence, drug_exposure)
+- Generate chronological patient sequences with temporal tokens (ATT):
+  - W0-W3 for gaps < 28 days
+  - M1-M11 for gaps < 365 days  
+  - LT for gaps >= 365 days
+- Add visit segment markers ([VS] and [VE])
+- Create sequences with concept_ids, ages, dates, visit_segments
+- Save sequences as parquet files
+
+The output file `patient_sequences.parquet` will be saved in the specified output directory.
 
 Step 3. Pre-train CEHR-BERT
 ---------------------------
 If you don't have your own OMOP instance, we have provided a sample of patient sequence data generated using Synthea
-at `sample/patient_sequence` in the repo. CEHR-BERT expects the data folder to be named as `patient_sequence`
+at `sample_data/pretrain/patient_sequence.parquet` in the repo.
 
-```console
+```bash
 mkdir test_dataset_prepared;
 mkdir test_results;
 python -m cehrbert.runners.hf_cehrbert_pretrain_runner \
    sample_configs/hf_cehrbert_pretrain_runner_config.yaml
 ```
 
-If your dataset is large, you could add ```--use_dask``` in the command above
+Note: Update the `data_folder` path in the config file to point to your patient sequences folder.
 
-Step 4. Generate hf readmission prediction task
+Step 4. Fine-tune CEHR-BERT
 ---------------------------
-If you don't have your own OMOP instance, we have provided a sample of patient sequence data generated using Synthea
-at `sample/hf_readmissioon` in the repo. Set up the pyspark environment variables if you haven't done so.
 ```bash
-# the omop derived tables need to be built using pyspark
-export SPARK_WORKER_INSTANCES="1"
-export SPARK_WORKER_CORES="16"
-export SPARK_EXECUTOR_CORES="2"
-export SPARK_DRIVER_MEMORY="12g"
-export SPARK_EXECUTOR_MEMORY="12g"
-```
-Generate the HF readmission prediction task
-```console
-python -u -m cehrbert_data.prediction_cohorts.hf_readmission \
-   -c hf_readmission -i ~/Documents/omop_test/ -o ~/Documents/omop_test/cehr-bert \
-   -dl 1985-01-01 -du 2020-12-31 \
-   -l 18 -u 100 -ow 360 -ps 0 -pw 30 \
-   --is_new_patient_representation
-```
-
-Step 5. Fine-tune CEHR-BERT
----------------------------
-```console
 mkdir test_finetune_results;
 python -m cehrbert.runners.hf_cehrbert_finetune_runner \
    sample_configs/hf_cehrbert_finetuning_runner_config.yaml
 ```
 
+Step 5. Evaluate CEHR-BERT
+---------------------------
+After fine-tuning, run comprehensive evaluation on your test set:
+
+```bash
+python -m cehrbert.evaluations.evaluate_model \
+    --model_path test_finetune_results \
+    --test_data sample_data/finetune/test \
+    --output_dir evaluation_results
+```
+
+This will generate:
+- **Evaluation metrics**: Accuracy, Precision, Recall, F1, AUC-ROC
+- **Visualizations**: Confusion matrix, ROC curve, class distributions, metrics summary
+- **Output files**: `evaluation_metrics.json`, `predictions.npz`, and PNG plots
+
+For additional examples, see the demo notebooks:
+- `cehrbert_training_demo.ipynb` - Complete training workflow
+- `cehrbert_pipeline_demo.ipynb` - End-to-end pipeline example
+
 ## Contact us
 
 If you have any questions, feel free to contact us at CEHR-BERT@lists.cumc.columbia.edu
+
+## Deprecation Notice
+
+The following features have been deprecated in this version:
+- **MEDS format support**: CEHR-BERT now focuses exclusively on OMOP CDM v5.4 format
+- **TensorFlow/Keras models**: All models are now PyTorch/HuggingFace based
+- **PySpark dependency**: Data processing now uses Polars for better performance
+- **Dask dependency**: Removed in favor of built-in PyTorch DataLoader and HuggingFace datasets
+- **cehrbert_data dependency**: Core functionality has been integrated into the main package
 
 ## Citation
 

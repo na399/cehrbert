@@ -43,14 +43,11 @@ def create_cehrbert_pretraining_dataset(
 
     # Remove patients without any records
     dataset = filter_dataset(dataset, data_args)
-    # If the data is already in meds, we don't need to sort the sequence anymore
-    if data_args.is_data_in_meds:
-        mapping_functions = [HFTokenizationMapping(concept_tokenizer, True)]
-    else:
-        mapping_functions = [
-            # SortPatientSequenceMapping(),
-            HFTokenizationMapping(concept_tokenizer, True),
-        ]
+    # Apply tokenization mapping
+    mapping_functions = [
+        # SortPatientSequenceMapping(),
+        HFTokenizationMapping(concept_tokenizer, True),
+    ]
 
     for mapping_function in mapping_functions:
         dataset = apply_cehrbert_dataset_mapping(
@@ -83,17 +80,12 @@ def create_cehrbert_finetuning_dataset(
 
     # Remove patients without any records
     dataset = filter_dataset(dataset, data_args)
-    if data_args.is_data_in_meds:
-        mapping_functions = [
-            HFFineTuningMapping(),
-            HFTokenizationMapping(concept_tokenizer, False),
-        ]
-    else:
-        mapping_functions = [
-            HFFineTuningMapping(),
-            # SortPatientSequenceMapping(),
-            HFTokenizationMapping(concept_tokenizer, False),
-        ]
+    # Apply fine-tuning and tokenization mappings
+    mapping_functions = [
+        HFFineTuningMapping(),
+        # SortPatientSequenceMapping(),
+        HFTokenizationMapping(concept_tokenizer, False),
+    ]
 
     for mapping_function in mapping_functions:
         dataset = apply_cehrbert_dataset_mapping(
@@ -116,21 +108,49 @@ def create_cehrbert_finetuning_dataset(
 
 
 def filter_dataset(dataset: Union[Dataset, DatasetDict], data_args: DataTrainingArguments):
-    # Remove patients without any records
+    # Remove patients without any records and fix data issues
+    def filter_and_fix_batch(batch):
+        valid_indices = []
+        for i in range(len(batch["num_of_concepts"])):
+            # Skip if no concepts
+            if batch["num_of_concepts"][i] <= 0:
+                continue
+                
+            # Check concept_values and concept_value_masks dimensions
+            if "concept_values" in batch and "concept_value_masks" in batch:
+                concept_ids_len = len(batch["concept_ids"][i])
+                concept_values_len = len(batch["concept_values"][i])
+                concept_value_masks_len = len(batch["concept_value_masks"][i])
+                
+                # Fix single-element arrays by expanding them
+                if concept_values_len == 1 and concept_ids_len > 1:
+                    batch["concept_values"][i] = [batch["concept_values"][i][0]] * concept_ids_len
+                    batch["concept_value_masks"][i] = [batch["concept_value_masks"][i][0]] * concept_ids_len
+                elif concept_values_len != concept_ids_len or concept_value_masks_len != concept_ids_len:
+                    # Skip samples with unfixable dimension mismatches
+                    continue
+            
+            valid_indices.append(i)
+        
+        # Return only valid samples
+        return {key: [values[i] for i in valid_indices] for key, values in batch.items()}
+    
     # check if DatatsetDict or IterableDatasetDict, if so, filter each dataset
     if isinstance(dataset, DatasetDict) and data_args.streaming:
         for key in dataset.keys():
-            dataset[key] = dataset[key].filter(
-                lambda batch: [num_of_concepts > 0 for num_of_concepts in batch["num_of_concepts"]],
+            dataset[key] = dataset[key].map(
+                filter_and_fix_batch,
                 batched=True,
                 batch_size=data_args.preprocessing_batch_size,
+                remove_columns=[],
             )
     else:
-        dataset = dataset.filter(
-            lambda batch: [num_of_concepts > 0 for num_of_concepts in batch["num_of_concepts"]],
+        dataset = dataset.map(
+            filter_and_fix_batch,
             num_proc=data_args.preprocessing_num_workers if not data_args.streaming else None,
             batched=True,
             batch_size=data_args.preprocessing_batch_size,
+            remove_columns=[],
         )
     return dataset
 

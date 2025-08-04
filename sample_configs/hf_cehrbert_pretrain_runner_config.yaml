@@ -37,7 +37,7 @@ dataloader_prefetch_factor: 4
 # Please point this to your output model folder
 output_dir: "test_results"
 
-evaluation_strategy: "epoch"
+eval_strategy: "epoch"
 save_strategy: "epoch"
 learning_rate: 0.00005
 per_device_train_batch_size: 4

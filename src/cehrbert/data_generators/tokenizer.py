@@ -1,8 +1,7 @@
-from typing import Optional, Sequence, Union
+from typing import Optional, Sequence
 
-from cehrbert_data.const.common import UNKNOWN_CONCEPT
-from dask.dataframe import Series as dd_series
-from pandas import Series as df_series
+from cehrbert.data_processing.common_constants import UNKNOWN_CONCEPT
+from pandas import Series as pd_series
 from tensorflow.keras.preprocessing.text import Tokenizer
 
 
@@ -33,11 +32,8 @@ class ConceptTokenizer:
         if self.special_tokens is not None:
             self.tokenizer.fit_on_texts(self.special_tokens)
 
-    def fit_on_concept_sequences(self, concept_sequences: Union[df_series, dd_series]):
-        if isinstance(concept_sequences, df_series):
-            self.tokenizer.fit_on_texts(concept_sequences.apply(list))
-        else:
-            self.tokenizer.fit_on_texts(concept_sequences.apply(list, meta="iterable"))
+    def fit_on_concept_sequences(self, concept_sequences: pd_series):
+        self.tokenizer.fit_on_texts(concept_sequences.apply(list))
 
     def encode(self, concept_sequences, is_generator=False):
         return (

@@ -1,0 +1,62 @@
+# CEHR-BERT Pretraining Test Configuration
+model_name_or_path: "models/cehrbert_omop_test"
+tokenizer_name_or_path: "models/cehrbert_omop_test"
+
+# Data configuration
+data_folder: "data/pretrain"
+dataset_prepared_path: "data/dataset_prepared_omop_test"
+validation_split_percentage: 0.2
+preprocessing_num_workers: 1
+preprocessing_batch_size: 100
+streaming: false
+
+# Tokenizer configuration
+vocab_size: 10000
+min_frequency: 2
+
+# Med-to-CehrBert arguments
+att_function_type: "cehr_bert"
+include_auxiliary_token: true
+include_demographic_prompt: true
+
+# Training configuration
+do_train: true
+overwrite_output_dir: true
+seed: 42
+
+# Model architecture (smaller for testing)
+num_hidden_layers: 4
+hidden_size: 256
+max_position_embeddings: 512
+
+# Torch dataloader configs
+dataloader_num_workers: 0
+
+# Output directory
+output_dir: "models/cehrbert_omop_test"
+
+# Training hyperparameters
+eval_strategy: "steps"
+save_strategy: "steps"
+learning_rate: 0.0001
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 4
+gradient_accumulation_steps: 1
+num_train_epochs: 1
+max_steps: 100  # Quick test
+
+# Optimization
+warmup_steps: 10
+weight_decay: 0.01
+logging_dir: "./logs_pretrain_omop_test"
+logging_steps: 10
+save_total_limit: 1
+eval_steps: 50
+save_steps: 50
+report_to: "none"
+
+# Mixed precision training
+fp16: false  # Disable for test
+
+# Early stopping
+use_early_stopping: false

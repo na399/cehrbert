@@ -51,7 +51,7 @@ class HfCehrBertRunnerIntegrationTest(unittest.TestCase):
             "1",
             "--save_strategy",
             "steps",
-            "--evaluation_strategy",
+            "--eval_strategy",
             "steps",
             "--save_steps",
             "1",

@@ -25,8 +25,6 @@ from cehrbert.data_generators.hf_data_generator.hf_dataset_collator import (
     CehrBertDataCollator,
     SamplePackingCehrBertDataCollator,
 )
-from cehrbert.data_generators.hf_data_generator.hf_dataset_mapping import MedToCehrBertDatasetMapping
-from cehrbert.data_generators.hf_data_generator.meds_utils import create_dataset_from_meds_reader
 from cehrbert.models.hf_models.config import CehrBertConfig
 from cehrbert.models.hf_models.hf_cehrbert import (
     CehrBertForClassification,
@@ -39,8 +37,7 @@ from cehrbert.runners.runner_util import (
     convert_dataset_to_iterable_dataset,
     generate_prepared_ds_path,
     get_last_hf_checkpoint,
-    get_meds_extension_path,
-    load_parquet_as_dataset,
+    load_data_as_dataset,
     parse_runner_args,
 )
 from cehrbert.runners.sample_packing_trainer import SamplePackingTrainer
@@ -88,54 +85,22 @@ def prepare_finetune_dataset(
     training_args: TrainingArguments,
     cache_file_collector: CacheFileCollector,
 ):
-    # If the data is in the MEDS format, we need to convert it to the CEHR-BERT format
-    if data_args.is_data_in_meds:
-        meds_extension_path = get_meds_extension_path(
-            data_folder=os.path.expanduser(data_args.cohort_folder),
-            dataset_prepared_path=os.path.expanduser(data_args.dataset_prepared_path),
-        )
-        try:
-            LOG.info(f"Trying to load the MEDS extension from disk at {meds_extension_path}...")
-            dataset = load_from_disk(meds_extension_path)
-            if data_args.streaming:
-                dataset = convert_dataset_to_iterable_dataset(dataset, num_shards=training_args.dataloader_num_workers)
-        except Exception as e:
-            LOG.exception(e)
-            dataset = create_dataset_from_meds_reader(
-                data_args,
-                dataset_mappings=[MedToCehrBertDatasetMapping(data_args=data_args, is_pretraining=False)],
-                cache_file_collector=cache_file_collector,
-            )
-            if not data_args.streaming:
-                dataset.save_to_disk(str(meds_extension_path))
-                stats = dataset.cleanup_cache_files()
-                LOG.info(
-                    "Clean up the cached files for the cehrbert dataset transformed from the MEDS: %s",
-                    stats,
-                )
-                # Clean up the files created from the data generator
-                cache_file_collector.remove_cache_files()
-                dataset = load_from_disk(str(meds_extension_path))
-
-        train_set = dataset["train"]
-        validation_set = dataset["validation"]
-        test_set = dataset["test"]
-    else:
-        dataset = load_parquet_as_dataset(os.path.expanduser(data_args.data_folder))
-        test_set = None
-        if data_args.test_data_folder:
-            test_set = load_parquet_as_dataset(data_args.test_data_folder)
-        # Split the dataset into train/val
-        train_val = dataset.train_test_split(
-            test_size=data_args.validation_split_percentage,
-            seed=training_args.seed,
-        )
-        train_set = train_val["train"]
-        validation_set = train_val["test"]
-        if not test_set:
-            test_valid = validation_set.train_test_split(test_size=data_args.test_eval_ratio, seed=training_args.seed)
-            validation_set = test_valid["train"]
-            test_set = test_valid["test"]
+    # Load dataset from data files (auto-detect format)
+    dataset = load_data_as_dataset(os.path.expanduser(data_args.data_folder))
+    test_set = None
+    if data_args.test_data_folder:
+        test_set = load_data_as_dataset(data_args.test_data_folder)
+    # Split the dataset into train/val
+    train_val = dataset.train_test_split(
+        test_size=data_args.validation_split_percentage,
+        seed=training_args.seed,
+    )
+    train_set = train_val["train"]
+    validation_set = train_val["test"]
+    if not test_set:
+        test_valid = validation_set.train_test_split(test_size=data_args.test_eval_ratio, seed=training_args.seed)
+        validation_set = test_valid["train"]
+        test_set = test_valid["test"]
 
     # Organize them into a single DatasetDict
     return DatasetDict({"train": train_set, "validation": validation_set, "test": test_set})
@@ -308,6 +273,7 @@ def main():
 
         trainer = trainer_class(
             model=model,
+            tokenizer=tokenizer,
             data_collator=data_collator,
             train_dataset=processed_dataset["train"],
             eval_dataset=processed_dataset["validation"],
@@ -319,11 +285,20 @@ def main():
 
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()  # Saves the tokenizer too for easy upload
+        
+        # Explicitly save tokenizer to ensure all files are present
+        tokenizer.save_pretrained(training_args.output_dir)
+        
         metrics = train_result.metrics
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
+        
+        # Save the final model and tokenizer (in case load_best_model_at_end loaded a different checkpoint)
+        if training_args.load_best_model_at_end:
+            trainer.save_model()
+            tokenizer.save_pretrained(training_args.output_dir)
 
     if training_args.do_predict:
         test_dataloader = DataLoader(

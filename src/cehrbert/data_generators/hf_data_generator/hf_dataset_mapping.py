@@ -10,19 +10,26 @@ from typing import Any, Dict, Generator, List, Optional, Union
 
 import numpy as np
 import pandas as pd
-from cehrbert_data.const.common import NA
-from cehrbert_data.decorators.patient_event_decorator_base import get_att_function
+from cehrbert.data_processing.common_constants import NA, get_att_function
 from datasets.formatting.formatting import LazyBatch
 from dateutil.relativedelta import relativedelta
-from meds.schema import birth_code, death_code
 from pandas import Series
 
-from cehrbert.med_extension.schema_extension import Event
 from cehrbert.models.hf_models.tokenization_hf_cehrbert import CehrBertTokenizer
 from cehrbert.runners.hf_runner_argument_dataclass import DataTrainingArguments
 
-birth_codes = [birth_code, "MEDS_BIRTH"]
-death_codes = [death_code, "MEDS_DEATH"]
+@dataclass
+class Event:
+    """Simple event dataclass for MEDS compatibility."""
+    time: datetime.datetime
+    code: str
+    text_value: Optional[str] = None
+    numeric_value: Optional[float] = None
+    unit: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+
+birth_codes = ["BIRTH", "MEDS_BIRTH"]
+death_codes = ["DEATH", "MEDS_DEATH"]
 
 # OMOP concept ids for inpatient related visits
 INPATIENT_VISIT_TYPES = ["9201", "262", "8971", "8920", "38004311"]
@@ -116,13 +123,13 @@ def has_events_and_get_events(events_iterable):
         return False, None
 
 
-def convert_date_to_posix_time(index_date: Union[datetime.date, datetime.datetime]) -> float:
+def convert_date_to_posix_time(index_date: Union[datetime.date, datetime.datetime, str, int, float, None]) -> Optional[float]:
     """
     Convert a date or datetime object to POSIX (Unix) time in seconds.
 
     Parameters
     ----------
-    index_date : Union[datetime.date, datetime.datetime]
+    index_date : Union[datetime.date, datetime.datetime, str, int, float, None]
         The date or datetime object to be converted to POSIX time.
 
     Returns
@@ -133,7 +140,7 @@ def convert_date_to_posix_time(index_date: Union[datetime.date, datetime.datetim
     Raises
     ------
     ValueError
-        If `index_date` is not an instance of `datetime.date` or `datetime.datetime`.
+        If `index_date` is not an instance of supported types.
 
     Examples
     --------
@@ -143,12 +150,36 @@ def convert_date_to_posix_time(index_date: Union[datetime.date, datetime.datetim
     >>> convert_date_to_posix_time(datetime.datetime(2024, 10, 25, 12, 30))
     1735144200.0
     """
-    if isinstance(index_date, datetime.datetime):
+    if index_date is None:
+        return None
+    elif isinstance(index_date, datetime.datetime):
         return index_date.timestamp()
     elif isinstance(index_date, datetime.date):
         return datetime.datetime.combine(index_date, datetime.datetime.min.time()).timestamp()
+    elif isinstance(index_date, (int, float)):
+        # Already a timestamp
+        return float(index_date)
+    elif isinstance(index_date, str):
+        # Try to parse string as datetime
+        try:
+            # Try ISO format first
+            dt = datetime.datetime.fromisoformat(index_date.replace('Z', '+00:00'))
+            return dt.timestamp()
+        except:
+            try:
+                # Try common date formats
+                for fmt in ["%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"]:
+                    try:
+                        dt = datetime.datetime.strptime(index_date, fmt)
+                        return dt.timestamp()
+                    except:
+                        continue
+                # If no format worked, try to convert as numeric
+                return float(index_date)
+            except:
+                raise ValueError(f"Cannot convert index_date '{index_date}' to timestamp")
     else:
-        raise ValueError("index_date must be datetime or datetime.datetime")
+        raise ValueError(f"index_date must be datetime, date, string, or numeric, got {type(index_date)}")
 
 
 def replace_escape_chars(text: str) -> str:

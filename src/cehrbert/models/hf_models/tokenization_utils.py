@@ -4,7 +4,7 @@ import pickle
 from functools import partial
 from typing import Any, Dict
 
-from cehrbert_data.const.common import NA
+from cehrbert.data_processing.common_constants import NA
 
 from cehrbert.utils.stat_utils import TruncatedOnlineStatistics
 

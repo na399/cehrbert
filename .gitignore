@@ -8,7 +8,6 @@ dist/*
 *h5
 *logs
 *nohup.out
-*ipynb
 
 *__pycache__/
 .eggs/
@@ -36,3 +35,7 @@ cehr_transformers.egg-info/top_level.txt
 test_data
 test_dataset_prepared
 test*results
+/data/
+/models/
+/wandb/
+test_finetune_prepared/

@@ -2,19 +2,7 @@ import dataclasses
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from cehrbert_data.decorators.patient_event_decorator_base import AttType
-
-from cehrbert.data_generators.hf_data_generator.meds_to_cehrbert_conversion_rules import (
-    MedsToBertMimic4,
-    MedsToCehrBertConversion,
-    MedsToCehrbertOMOP,
-)
-
-# Create an enum dynamically from the list
-MedsToCehrBertConversionType = Enum(
-    "MedsToCehrBertConversionType",
-    [cls.__name__ for cls in MedsToCehrBertConversion.__subclasses__()],
-)
+from cehrbert.data_processing.common_constants import AttType
 
 
 class FineTuneModelType(Enum):
@@ -90,10 +78,6 @@ class DataTrainingArguments:
             "choices": f"choices={[e.value for e in AttType]}",
         },
     )
-    is_data_in_meds: Optional[bool] = dataclasses.field(
-        default=False,
-        metadata={"help": "The boolean indicator to indicate whether the data is in the MEDS format"},
-    )
     inpatient_att_function_type: Literal[
         AttType.CEHR_BERT.value,
         AttType.DAY.value,
@@ -108,22 +92,6 @@ class DataTrainingArguments:
             "artificial time tokens between neighboring events within inpatient visits."
             "Default to None, meaning the inpatient artificial time tokens are not created.",
             "choices": f"choices={[e.value for e in AttType]}",
-        },
-    )
-    meds_exclude_tables: Optional[List[str]] = dataclasses.field(
-        default_factory=list,
-        metadata={"help": "The tables to exclude in the conversion e.g. measurement"},
-    )
-    # TODO: Python 3.9/10 do not support dynamic unpacking, we have to manually provide the entire
-    #  list right now.
-    meds_to_cehrbert_conversion_type: Literal[
-        MedsToBertMimic4.__name__,
-        MedsToCehrbertOMOP.__name__,
-    ] = dataclasses.field(
-        default=MedsToCehrbertOMOP.__name__,
-        metadata={
-            "help": "The MEDS to CEHRBERT conversion type e.g. MedsToBertMimic4",
-            "choices": f"choices={[e for e in MedsToCehrBertConversionType.__members__]}",
         },
     )
     include_auxiliary_token: Optional[bool] = dataclasses.field(

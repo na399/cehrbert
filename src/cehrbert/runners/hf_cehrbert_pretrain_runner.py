@@ -17,8 +17,6 @@ from cehrbert.data_generators.hf_data_generator.hf_dataset_collator import (
     CehrBertDataCollator,
     SamplePackingCehrBertDataCollator,
 )
-from cehrbert.data_generators.hf_data_generator.hf_dataset_mapping import MedToCehrBertDatasetMapping
-from cehrbert.data_generators.hf_data_generator.meds_utils import create_dataset_from_meds_reader
 from cehrbert.models.hf_models.config import CehrBertConfig
 from cehrbert.models.hf_models.hf_cehrbert import CehrBertForPreTraining
 from cehrbert.models.hf_models.tokenization_hf_cehrbert import CehrBertTokenizer
@@ -27,8 +25,7 @@ from cehrbert.runners.runner_util import (
     convert_dataset_to_iterable_dataset,
     generate_prepared_ds_path,
     get_last_hf_checkpoint,
-    get_meds_extension_path,
-    load_parquet_as_dataset,
+    load_data_as_dataset,
     parse_runner_args,
 )
 from cehrbert.runners.sample_packing_trainer import SamplePackingTrainer
@@ -180,6 +177,10 @@ def main():
     - The tokenizer and model are saved to disk after the training process completes.
     """
     cehrbert_args, data_args, model_args, training_args = parse_runner_args()
+    
+    # Fix adam_epsilon if it's a string (happens with YAML scientific notation)
+    if hasattr(training_args, 'adam_epsilon') and isinstance(training_args.adam_epsilon, str):
+        training_args.adam_epsilon = float(training_args.adam_epsilon)
 
     if data_args.streaming:
         # This happens only when streaming is enabled. This is for disabling the warning message
@@ -205,65 +206,31 @@ def main():
         tokenizer = load_and_create_tokenizer(data_args=data_args, model_args=model_args, dataset=processed_dataset)
     else:
         if is_main_process(training_args.local_rank):
-            # If the data is in the MEDS format, we need to convert it to the CEHR-BERT format
-            if data_args.is_data_in_meds:
-                meds_extension_path = get_meds_extension_path(
-                    data_folder=os.path.expanduser(data_args.data_folder),
-                    dataset_prepared_path=os.path.expanduser(data_args.dataset_prepared_path),
+            # Load the dataset from the data files (auto-detect format)
+            dataset = load_data_as_dataset(
+                os.path.expanduser(data_args.data_folder), split="train", streaming=data_args.streaming
+            )
+            # If streaming is enabled, we need to manually split the data into train/val
+            if data_args.streaming and data_args.validation_split_num:
+                dataset = dataset.shuffle(buffer_size=10_000, seed=training_args.seed)
+                train_set = dataset.skip(data_args.validation_split_num)
+                val_set = dataset.take(data_args.validation_split_num)
+                dataset = DatasetDict({"train": train_set, "validation": val_set})
+            elif data_args.validation_split_percentage:
+                dataset = dataset.train_test_split(
+                    test_size=data_args.validation_split_percentage,
+                    seed=training_args.seed,
                 )
-                try:
-                    LOG.info(
-                        "Trying to load the MEDS extension from disk at %s...",
-                        meds_extension_path,
-                    )
-                    dataset = load_from_disk(meds_extension_path)
-                    if data_args.streaming:
-                        dataset = convert_dataset_to_iterable_dataset(
-                            dataset, num_shards=training_args.dataloader_num_workers
-                        )
-                except FileNotFoundError as e:
-                    LOG.exception(e)
-                    dataset = create_dataset_from_meds_reader(
-                        data_args,
-                        dataset_mappings=[MedToCehrBertDatasetMapping(data_args=data_args, is_pretraining=True)],
-                        cache_file_collector=cache_file_collector,
-                    )
-                    if not data_args.streaming:
-                        dataset.save_to_disk(str(meds_extension_path))
-                        stats = dataset.cleanup_cache_files()
-                        LOG.info(
-                            "Clean up the cached files for the cehrbert dataset transformed from the MEDS: %s",
-                            stats,
-                        )
-                        # Clean up the files created from the data generator
-                        cache_file_collector.remove_cache_files()
-                        dataset = load_from_disk(str(meds_extension_path))
+                dataset = DatasetDict({"train": dataset["train"], "validation": dataset["test"]})
             else:
-                # Load the dataset from the parquet files
-                dataset = load_parquet_as_dataset(
-                    os.path.expanduser(data_args.data_folder), split="train", streaming=data_args.streaming
+                raise RuntimeError(
+                    f"Can not split the data. If streaming is enabled, validation_split_num needs  "
+                    f"to be defined, otherwise validation_split_percentage needs to be provided. "
+                    f"The current values are:\n"
+                    f"validation_split_percentage: {data_args.validation_split_percentage}\n"
+                    f"validation_split_num: {data_args.validation_split_num}\n"
+                    f"streaming: {data_args.streaming}"
                 )
-                # If streaming is enabled, we need to manually split the data into train/val
-                if data_args.streaming and data_args.validation_split_num:
-                    dataset = dataset.shuffle(buffer_size=10_000, seed=training_args.seed)
-                    train_set = dataset.skip(data_args.validation_split_num)
-                    val_set = dataset.take(data_args.validation_split_num)
-                    dataset = DatasetDict({"train": train_set, "validation": val_set})
-                elif data_args.validation_split_percentage:
-                    dataset = dataset.train_test_split(
-                        test_size=data_args.validation_split_percentage,
-                        seed=training_args.seed,
-                    )
-                    dataset = DatasetDict({"train": dataset["train"], "validation": dataset["test"]})
-                else:
-                    raise RuntimeError(
-                        f"Can not split the data. If streaming is enabled, validation_split_num needs  "
-                        f"to be defined, otherwise validation_split_percentage needs to be provided. "
-                        f"The current values are:\n"
-                        f"validation_split_percentage: {data_args.validation_split_percentage}\n"
-                        f"validation_split_num: {data_args.validation_split_num}\n"
-                        f"streaming: {data_args.streaming}"
-                    )
             # Create the CEHR-BERT tokenizer if it's not available in the output folder
             tokenizer = load_and_create_tokenizer(data_args=data_args, model_args=model_args, dataset=dataset)
             # sort the patient features chronologically and tokenize the data

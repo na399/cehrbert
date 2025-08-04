@@ -1,6 +1,7 @@
 import collections
 import random
 from typing import Any, Dict, Optional, Tuple
+import logging
 
 import numpy as np
 import torch
@@ -8,6 +9,8 @@ from torch.nn.utils.rnn import pad_sequence
 
 from cehrbert.data_generators.hf_data_generator.hf_dataset_mapping import TruncationType
 from cehrbert.models.hf_models.tokenization_hf_cehrbert import CehrBertTokenizer
+
+logger = logging.getLogger(__name__)
 
 
 class CehrBertDataCollator:
@@ -46,6 +49,7 @@ class CehrBertDataCollator:
     def __call__(self, examples):
 
         examples = [self.generate_start_end_index(_) for _ in examples]
+        
         batch = {}
         batch_size = len(examples)
 

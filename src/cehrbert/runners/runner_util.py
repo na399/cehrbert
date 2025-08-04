@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, Tuple, Union
+from typing import Dict, Tuple, Union, List
 
 import torch
 from datasets import Dataset, DatasetDict, IterableDataset, IterableDatasetDict, load_dataset
@@ -52,6 +52,113 @@ def load_parquet_as_dataset(data_folder, split="train", streaming=False) -> Unio
     data_abspath = os.path.expanduser(data_folder)
     data_files = glob.glob(os.path.join(data_abspath, "*.parquet"))
     dataset = load_dataset("parquet", data_files=data_files, split=split, streaming=streaming)
+    return dataset
+
+
+def detect_data_format(data_folder: str) -> str:
+    """
+    Detects the data format (parquet or arrow) in the specified folder.
+    
+    Parameters:
+        data_folder (str): The path to the folder containing data files.
+        
+    Returns:
+        str: Either "parquet" or "arrow" depending on what files are found.
+        
+    Raises:
+        ValueError: If no supported data files are found.
+    """
+    data_abspath = os.path.expanduser(data_folder)
+    
+    # Check for parquet files
+    parquet_files = glob.glob(os.path.join(data_abspath, "*.parquet"))
+    
+    # Check for arrow files
+    arrow_files = glob.glob(os.path.join(data_abspath, "*.arrow"))
+    if not arrow_files:
+        # Check if there's a sequences subdirectory with arrow files
+        sequences_path = os.path.join(data_abspath, "sequences")
+        if os.path.exists(sequences_path):
+            arrow_files = glob.glob(os.path.join(sequences_path, "*.arrow"))
+    
+    # Determine format based on what files exist
+    if arrow_files and parquet_files:
+        # If both exist, prefer arrow (newer format)
+        LOG.info(f"Found both arrow and parquet files in {data_abspath}, using arrow format")
+        return "arrow"
+    elif arrow_files:
+        return "arrow"
+    elif parquet_files:
+        return "parquet"
+    else:
+        raise ValueError(f"No parquet or arrow files found in {data_abspath}")
+
+
+def load_data_as_dataset(data_folder: str, split: str = "train", streaming: bool = False) -> Union[Dataset, IterableDataset]:
+    """
+    Automatically detects the data format and loads the dataset accordingly.
+    
+    Parameters:
+        data_folder (str): The path to the folder containing data files.
+        split (str, optional): The split of the dataset to load. Default is 'train'.
+        streaming (bool, optional): Whether to stream the dataset.
+        
+    Returns:
+        datasets.Dataset or IterableDataset: The loaded dataset.
+    """
+    format_type = detect_data_format(data_folder)
+    
+    if format_type == "arrow":
+        return load_arrow_as_dataset(data_folder, split, streaming)
+    else:
+        return load_parquet_as_dataset(data_folder, split, streaming)
+
+
+def load_arrow_as_dataset(data_folder, split="train", streaming=False) -> Union[Dataset, IterableDataset]:
+    """
+    Loads a dataset from Arrow files located within a specified folder into a Hugging Face `datasets.Dataset`.
+
+    This function searches for all `.arrow` files in the specified folder and loads them as a dataset using the
+    Hugging Face `datasets` library. Arrow format preserves data types perfectly, including string_view.
+
+    Parameters:
+        data_folder (str): The path to the folder containing Arrow files. The function will look for all `.arrow`
+                           files within this directory.
+        split (str, optional): The split of the dataset to load. Default is 'train'. This can typically be 'train',
+                               'test', or 'validation', depending on how you wish to use the dataset.
+        streaming (bool, optional): Indicate whether we want to stream the dataset
+
+    Returns:
+        datasets.Dataset: A dataset object containing the data from all Arrow files found in the specified folder.
+                          This dataset is compatible with the Hugging Face `datasets` library and can be used directly
+                          for model training or evaluation.
+
+    Example:
+        >>> data_folder = './data/train_data/sequences'
+        >>> dataset = load_arrow_as_dataset(data_folder, split='train')
+        >>> print(len(dataset))
+        1000000
+
+    Note:
+        The function assumes that all Arrow files in the specified folder belong to the same split and schema.
+        Arrow files are expected to follow the naming pattern: data-XXXXX-of-YYYYY.arrow
+    """
+    data_abspath = os.path.expanduser(data_folder)
+    arrow_files = sorted(glob.glob(os.path.join(data_abspath, "*.arrow")))
+    
+    if not arrow_files:
+        # Check if there's a sequences subdirectory
+        sequences_path = os.path.join(data_abspath, "sequences")
+        if os.path.exists(sequences_path):
+            arrow_files = sorted(glob.glob(os.path.join(sequences_path, "*.arrow")))
+    
+    if not arrow_files:
+        raise ValueError(f"No arrow files found in {data_abspath} or {data_abspath}/sequences")
+    
+    LOG.info(f"Found {len(arrow_files)} arrow files in {data_abspath}")
+    
+    # Load dataset from arrow files
+    dataset = load_dataset("arrow", data_files=arrow_files, split=split, streaming=streaming)
     return dataset
 
 
@@ -371,27 +478,6 @@ def compute_metrics(eval_pred: EvalPrediction):
 
     return {"perplexity": perplexity.item()}
 
-
-def get_meds_extension_path(data_folder: str, dataset_prepared_path: str):
-    """
-    Generates the file path for the 'meds_extension' by appending the base name of the data folder.
-
-    to the dataset prepared path.
-
-    Args:
-        data_folder (str): The path to the data folder. The trailing backslash will be removed.
-        dataset_prepared_path (str): The directory where the dataset is prepared.
-
-    Returns:
-        str: The constructed file path for the meds extension.
-
-    Example:
-        If data_folder is "C:\\data\\" and dataset_prepared_path is "C:\\prepared_data",
-        the function will return "C:\\prepared_data\\data_meds_extension".
-    """
-    basename = os.path.basename(remove_trailing_slashes(data_folder))
-    meds_extension_path = os.path.join(dataset_prepared_path, f"{basename}_meds_extension")
-    return meds_extension_path
 
 
 def convert_dataset_to_iterable_dataset(

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Sequence, Tuple, Union
 
 import numpy as np
 import transformers
-from cehrbert_data.const.common import NA
+from cehrbert.data_processing.common_constants import NA
 from datasets import Dataset, DatasetDict
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel

@@ -1,6 +1,36 @@
 import numpy as np
 import scipy.stats as stats
-from femr.stat_utils import OnlineStatistics
+
+
+class OnlineStatistics:
+    """Simple online statistics calculator using Welford's algorithm."""
+    
+    def __init__(self):
+        self.count = 0
+        self.current_mean = 0.0
+        self.m2 = 0.0
+        
+    def add(self, weight: float, value: float) -> None:
+        """Add a weighted value to the statistics."""
+        self.count += weight
+        delta = value - self.current_mean
+        self.current_mean += (weight / self.count) * delta
+        delta2 = value - self.current_mean
+        self.m2 += weight * delta * delta2
+        
+    def mean(self) -> float:
+        """Return the current mean."""
+        return self.current_mean
+        
+    def variance(self) -> float:
+        """Return the current variance."""
+        if self.count < 2:
+            return 0.0
+        return self.m2 / self.count
+        
+    def standard_deviation(self) -> float:
+        """Return the current standard deviation."""
+        return np.sqrt(self.variance())
 
 
 class TruncatedOnlineStatistics(OnlineStatistics):
