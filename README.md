@@ -49,22 +49,22 @@ prediction.
 
 The project is built in python 3.10, and project dependency needs to be installed
 
-Create a new Python virtual environment
+Create a new Python virtual environment using uv
 
 ```bash
-python3.10 -m venv .venv;
-source .venv/bin/activate;
+uv venv --python 3.10
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 Build the project
 
 ```bash
-pip install -e .[dev]
+uv pip install -e .[dev]
 ```
 
 For GPU support with CUDA 12.8:
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu128
+uv pip install torch --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ## Key Updates in This Version
@@ -90,8 +90,7 @@ CEHR-BERT now uses modern data processing libraries:
 
 ## Instructions for Use with OMOP CDM v5.4
 
-Step 1. Download OMOP tables as parquet files
----------------------------
+### Step 1. Download OMOP tables as parquet files
 CEHR-BERT now uses Polars and ConnectorX for efficient data processing. You can either:
 - Connect directly to your OMOP database
 - Use pre-exported parquet files
@@ -123,12 +122,11 @@ at [omop_synthea.tar.gz](https://drive.google.com/file/d/1k7-cZACaDNw8A1JRI37mfM
 tar -xvf omop_synthea.tar data/omop
 ```
 
-Step 1.5. Consolidate Partitioned OMOP Data (if needed)
----------------------------
+#### Step 1.5. Consolidate Partitioned OMOP Data (if needed)
 If your OMOP data is in partitioned format (multiple parquet files per table), consolidate them first:
 
 ```bash
-python consolidate_omop_data.py data/omop data/omop_consolidated
+python scripts/consolidate_omop_data.py data/omop data/omop_consolidated
 ```
 
 This script will:
@@ -136,20 +134,41 @@ This script will:
 - Handle large datasets efficiently using Polars
 - Output consolidated files named as `{table_name}.parquet`
 
-Step 2. Generate Patient Sequences from OMOP Data
----------------------------
+### Step 2. Generate Patient Sequences from OMOP Data
 Convert your OMOP tables into patient sequences for CEHR-BERT pre-training.
 
-**Option 1: Use the preprocessing pipeline** (recommended):
+#### Recommended: Arrow Mode (Best Compatibility)
+Arrow mode provides the best balance of performance and compatibility:
 ```bash
 bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
    --input_folder data/omop \
-   --output_folder data/omop/patient_sequences/ \
-   --start_date 1985-01-01 \
-   --min_patients 100
+   --output_folder data/patient_sequences \
+   --start_date 2020-01-01 \
+   --min_patients 100 \
+   --use_arrow \
+   --chunk_size 5000
 ```
 
-For large datasets with staging mode:
+**Why Arrow mode?**
+- ✅ Memory efficient - processes data in chunks
+- ✅ No string_view compatibility issues
+- ✅ Best for HuggingFace integration
+- ✅ Works reliably with all dataset sizes
+
+#### Alternative Processing Modes
+
+**Vectorized mode** (fastest, but requires more memory):
+```bash
+bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
+   --input_folder data/omop \
+   --output_folder data/patient_sequences \
+   --start_date 2020-01-01 \
+   --min_patients 100 \
+   --use_vectorized \
+   --chunk_size 2500
+```
+
+**Staging mode** (for distributed processing):
 ```bash
 bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
    data/omop \
@@ -161,62 +180,29 @@ bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
    --num_partitions 50
 ```
 
-For best performance, use the vectorized mode:
-```bash
-bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
-   --input_folder data/omop \
-   --output_folder data/patient_sequences \
-   --start_date 2020-01-01 \
-   --min_patients 100 \
-   --use_vectorized
-```
-
-For large datasets, adjust the chunk size based on available memory:
-```bash
-# For 1M+ patients with limited memory
-bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
-   --input_folder data/omop \
-   --output_folder data/patient_sequences \
-   --start_date 2020-01-01 \
-   --min_patients 100 \
-   --use_vectorized \
-   --chunk_size 2500
-```
-
-For datasets with string_view compatibility issues or memory constraints, use Arrow mode:
-```bash
-# Arrow mode - avoids string_view issues and memory problems
-bash src/cehrbert/scripts/create_cehrbert_pretraining_data.sh \
-   --input_folder data/omop \
-   --output_folder data/patient_sequences \
-   --start_date 2020-01-01 \
-   --min_patients 100 \
-   --use_arrow \
-   --chunk_size 5000
-```
-
-This pipeline will:
+#### What the Pipeline Does
 1. Filter concepts based on minimum patient count
-2. Generate patient sequences with temporal tokens
-3. Create train/validation/test splits (memory-efficient streaming for large datasets)
+2. Generate patient sequences with temporal tokens (ATT)
+3. Create train/validation/test splits
 
-**Performance Notes:**
-- **Arrow mode**: Memory efficient, no string_view issues, best for HuggingFace compatibility
-- **Vectorized mode**: ~30x faster than original implementation
-- **Staging mode**: ~4 hours for 1M patients using 16 workers
-- **Original mode**: Best for small datasets (<10K patients)
+#### Performance Comparison
+| Mode | Speed | Memory Usage | Best For |
+|------|-------|--------------|----------|
+| Arrow | Fast | Low (~8GB) | **Most users** - reliable and compatible |
+| Vectorized | Fastest | High (~20GB) | Small-medium datasets with ample RAM |
+| Staging | Moderate | Low | Very large datasets (>10M patients) |
 
-**Chunk Size Recommendations for Vectorized Mode:**
-| Dataset Size | Chunk Size | Memory Usage | Processing Time |
-|--------------|------------|--------------|-----------------|
-| < 100K       | 10,000     | ~4GB         | < 1 minute      |
-| 100K - 500K  | 5,000      | ~8GB         | 5-6 minutes     |
-| 500K - 1M    | 2,000      | ~15GB        | 10-12 minutes   |
-| > 1M         | 1,000      | ~20GB        | 15-20 minutes   |
+#### Chunk Size Recommendations
+| Dataset Size | Arrow Mode | Vectorized Mode | Memory Usage |
+|--------------|------------|-----------------|--------------|
+| < 100K | 10,000 | 10,000 | ~4GB |
+| 100K - 500K | 5,000 | 5,000 | ~8GB |
+| 500K - 1M | 5,000 | 2,000 | ~15GB |
+| > 1M | 5,000 | 1,000 | ~20GB |
 
-If you encounter out-of-memory errors, reduce the chunk_size by half. Monitor memory usage with `htop` during processing.
+💡 **Tip**: If you encounter out-of-memory errors, reduce chunk_size by half.
 
-**Option 2: Run individual steps**:
+#### Manual Processing (Advanced)
 ```bash
 # Step 1: Filter concepts by minimum patient count
 python -m cehrbert.data_processing.concept_filter \
@@ -237,26 +223,7 @@ python -m cehrbert.data_processing.patient_splitter \
    --train_ratio 0.8
 ```
 
-**Option 3: Use the standalone script**:
-```bash
-# Edit generate_patient_sequences.py to update paths
-python generate_patient_sequences.py
-```
-
-The patient sequence generation will:
-- Read OMOP tables (person, visit_occurrence, condition_occurrence, procedure_occurrence, drug_exposure)
-- Generate chronological patient sequences with temporal tokens (ATT):
-  - W0-W3 for gaps < 28 days
-  - M1-M11 for gaps < 365 days  
-  - LT for gaps >= 365 days
-- Add visit segment markers ([VS] and [VE])
-- Create sequences with concept_ids, ages, dates, visit_segments
-- Save sequences as parquet files
-
-The output file `patient_sequences.parquet` will be saved in the specified output directory.
-
-Step 3. Pre-train CEHR-BERT
----------------------------
+### Step 3. Pre-train CEHR-BERT
 If you don't have your own OMOP instance, we have provided a sample of patient sequence data generated using Synthea
 at `sample_data/pretrain/patient_sequence.parquet` in the repo.
 
@@ -269,16 +236,14 @@ python -m cehrbert.runners.hf_cehrbert_pretrain_runner \
 
 Note: Update the `data_folder` path in the config file to point to your patient sequences folder.
 
-Step 4. Fine-tune CEHR-BERT
----------------------------
+### Step 4. Fine-tune CEHR-BERT
 ```bash
 mkdir test_finetune_results;
 python -m cehrbert.runners.hf_cehrbert_finetune_runner \
    sample_configs/hf_cehrbert_finetuning_runner_config.yaml
 ```
 
-Step 5. Evaluate CEHR-BERT
----------------------------
+### Step 5. Evaluate CEHR-BERT
 After fine-tuning, run comprehensive evaluation on your test set:
 
 ```bash
